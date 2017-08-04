@@ -65,8 +65,8 @@ fn main() {
             let msg = amounts
                 .map(move |(from_client, from_server)| {
                     println!("[INFO]from {} to {} closed, wrote {} bytes and received {} bytes",
-                             server_addr,
                              client_addr,
+                             server_addr,
                              from_client,
                              from_server);
                 })
