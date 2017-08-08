@@ -1,17 +1,7 @@
-# Use Debian 16.04 as the base for our Rust musl toolchain, because of
-# https://github.com/rust-lang/rust/issues/34978 (as of Rust 1.11).
-FROM ubuntu:16.04 as builder
+FROM debian:8 as builder
 
-# The Rust toolchain to use when building our image.  Set by `hooks/build`.
 ARG TOOLCHAIN=stable
 
-# Make sure we have basic dev tools for building C libraries.  Our goal
-# here is to support the musl-libc builds and Cargo builds needed for a
-# large selection of the most popular crates.
-#
-# We also set up a `rust` user by default, in whose account we'll install
-# the Rust toolchain.  This user has sudo privileges if you need to install
-# any more software.
 RUN apt-get update && \
     apt-get install -y \
         build-essential \
@@ -20,68 +10,26 @@ RUN apt-get update && \
         file \
         git \
         musl-tools \
-        sudo \
         xutils-dev \
         && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    useradd rust --user-group --create-home --shell /bin/bash --groups sudo
-
-# Allow sudo without a password.
-ADD .docker/sudoers /etc/sudoers.d/nopasswd
-
-# Run all further code as user `rust`, and create our working directories
-# as the appropriate user.
-USER rust
-RUN mkdir -p /home/rust/libs /home/rust/src
-
-# Set up our path with all our binary directories, including those for the
-# musl-gcc toolchain and for our Rust toolchain.
-ENV PATH=/home/rust/.cargo/bin:/usr/local/musl/bin:/usr/local/bin:/usr/bin:/bin
-
-# Install our Rust toolchain and the `musl` target.  We patch the
-# command-line we pass to the installer so that it won't attempt to
-# interact with the user or fool around with TTYs.  We also set the default
-# `--target` to musl so that our users don't need to keep overriding it
-# manually.
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+ARG HOME=/root
+RUN mkdir -p $HOME/libs $HOME/src
+ENV PATH=$HOME/.cargo/bin:/usr/local/musl/bin:/usr/local/bin:/usr/bin:/bin
 RUN curl https://sh.rustup.rs -sSf | \
     sh -s -- -y --default-toolchain $TOOLCHAIN && \
     rustup target add x86_64-unknown-linux-musl
-ADD .docker/cargo-config.toml /home/rust/.cargo/config
+ADD .docker/cargo-config.toml $HOME/.cargo/config
+WORKDIR $HOME/src
 
-# We'll build our libraries in subdirectories of /home/rust/libs.  Please
-# clean up when you're done.
-WORKDIR /home/rust/libs
-
-# Build a static library version of OpenSSL using musl-libc.  This is
-# needed by the popular Rust `hyper` crate.
-RUN VERS=1.0.2j && \
-    curl -O https://www.openssl.org/source/openssl-$VERS.tar.gz && \
-    tar xvzf openssl-$VERS.tar.gz && cd openssl-$VERS && \
-    env CC=musl-gcc ./config --prefix=/usr/local/musl && \
-    env C_INCLUDE_PATH=/usr/local/musl/include/ make depend && \
-    make && sudo make install && \
-    cd .. && rm -rf openssl-$VERS.tar.gz openssl-$VERS
-ENV OPENSSL_DIR=/usr/local/musl/ \
-    OPENSSL_INCLUDE_DIR=/usr/local/musl/include/ \
-    DEP_OPENSSL_INCLUDE=/usr/local/musl/include/ \
-    OPENSSL_LIB_DIR=/usr/local/musl/lib/ \
-    OPENSSL_STATIC=1
-
-# (Please feel free to submit pull requests for musl-libc builds of other C
-# libraries needed by the most popular and common Rust crates, to avoid
-# everybody needing to build them manually.)
-
-# Expect our source code to live in /home/rust/src.  We'll run the build as
-# user `rust`, which will be uid 1000, gid 1000 outside the container.
-WORKDIR /home/rust/src
-
-ADD Cargo.toml Cargo.lock /home/rust/src/
-ADD src /home/rust/src/src/
+ADD Cargo.toml Cargo.lock $HOME/src/
+ADD src $HOME/src/src/
 RUN cargo check
 RUN cargo build --release
 RUN strip target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater
 
-FROM alpine:3.6
-RUN apk add --no-cache llvm-libunwind
-COPY --from=builder /home/rust/src/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/
+
+
+FROM scratch
+COPY --from=builder /root/src/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/
 ENTRYPOINT ["/usr/local/bin/tcp_transparent_repeater"]
