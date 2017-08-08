@@ -2,7 +2,6 @@ extern crate tokio_core;
 extern crate tokio_io;
 extern crate futures;
 extern crate nix;
-extern crate libc;
 
 use std::sync::Arc;
 use std::env;
