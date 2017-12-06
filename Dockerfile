@@ -1,6 +1,6 @@
 FROM debian:9 as builder
 
-ARG TOOLCHAIN=stable
+ARG TOOLCHAIN=nightly
 
 RUN apt-get update && \
     apt-get install -y \
