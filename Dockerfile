@@ -1,4 +1,4 @@
-FROM debian:8 as builder
+FROM debian:9 as builder
 
 ARG TOOLCHAIN=stable
 
