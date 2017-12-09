@@ -1,35 +1,18 @@
-FROM debian:9 as builder
+FROM rust as builder
 
-ARG TOOLCHAIN=nightly
+ARG TARGET=x86_64-unknown-linux-musl
 
-RUN apt-get update && \
-    apt-get install -y \
-        build-essential \
-        cmake \
-        curl \
-        file \
-        git \
+RUN apt-get update
+RUN apt-get install -y \
         musl-tools \
-        xutils-dev \
-        && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
-ARG HOME=/root
-RUN mkdir -p $HOME/libs $HOME/src
-ENV PATH=$HOME/.cargo/bin:/usr/local/musl/bin:/usr/local/bin:/usr/bin:/bin
-RUN curl https://sh.rustup.rs -sSf | \
-    sh -s -- -y --default-toolchain $TOOLCHAIN && \
-    rustup target add x86_64-unknown-linux-musl
-ADD .docker/cargo-config.toml $HOME/.cargo/config
-WORKDIR $HOME/src
-
-ADD Cargo.toml Cargo.lock $HOME/src/
-ADD src $HOME/src/src/
-RUN cargo check
-RUN cargo build --release
-RUN strip target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater
-
-
+        xutils-dev
+RUN rustup target add $TARGET
+WORKDIR /usr/src/ttr
+ADD Cargo.toml Cargo.lock /usr/src/ttr/
+ADD src /usr/src/ttr/src/
+RUN cargo build --release --target $TARGET
+RUN strip target/$TARGET/release/tcp_transparent_repeater
 
 FROM scratch
-COPY --from=builder /root/src/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/
-ENTRYPOINT ["/usr/local/bin/tcp_transparent_repeater"]
+COPY --from=builder /usr/src/ttr/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /
+ENTRYPOINT ["/tcp_transparent_repeater"]
