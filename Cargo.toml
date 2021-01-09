@@ -1,10 +1,11 @@
 [package]
 name = "tcp_transparent_repeater"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Yifan Gao <git@yfgao.com>"]
+edition = "2018"
 
 [dependencies]
-tokio-core = "0.1"
-tokio-io = "0.1"
-futures = "0.1"
-nix = "0.9"
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+nix = "0.19"
+

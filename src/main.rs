@@ -1,109 +1,70 @@
-extern crate tokio_core;
-extern crate tokio_io;
-extern crate futures;
-extern crate nix;
+#![warn(rust_2018_idioms)]
 
-use std::sync::Arc;
+use tokio::io;
+use tokio::io::AsyncWriteExt;
+use tokio::net::{TcpListener, TcpStream};
+
+use futures::FutureExt;
 use std::env;
-use std::net::{Shutdown, SocketAddr};
-use std::io::{self, Read, Write};
+use std::error::Error;
 
-use futures::stream::Stream;
-use futures::{Future, Poll};
-use tokio_core::net::{TcpListener, TcpStream};
-use tokio_core::reactor::Core;
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::io::{copy, shutdown};
-
-use nix::sys::socket::getsockopt;
-use nix::sys::socket::{sockopt, InetAddr};
+use nix::sys::socket::{sockopt,getsockopt,InetAddr};
 use std::os::unix::io::AsRawFd;
+use std::net::SocketAddr;
 
-fn main() {
-    let listen_addr = env::args().nth(1).unwrap_or("127.0.0.1:1080".to_string());
-    let listen_addr = listen_addr.parse::<SocketAddr>().unwrap();
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let listen_addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:1080".to_string());
 
-    // Create the event loop that will drive this server.
-    let mut l = Core::new().unwrap();
-    let handle = l.handle();
-
-    // Create a TCP listener which will listen for incoming connections.
-    let socket = TcpListener::bind(&listen_addr, &l.handle()).unwrap();
     println!("Listening on: {}", listen_addr);
 
-    let done = socket
-        .incoming()
-        .for_each(move |(client, client_addr)| {
-            let server_addr = getsockopt(client.as_raw_fd(), sockopt::OriginalDst).unwrap();
-            let server_addr = InetAddr::V4(server_addr).to_std();
-            if client.local_addr().unwrap() == server_addr {
-                eprintln!("[WARM]from {} to {} error, cannot service to local network.",
-                          client_addr,
-                          server_addr);
-                return Ok(());
+    let listener = TcpListener::bind(listen_addr).await?;
+
+    while let Ok((inbound, client_addr)) = listener.accept().await {
+        let server_addr = getsockopt(inbound.as_raw_fd(), sockopt::OriginalDst).unwrap();
+        let server_addr = InetAddr::V4(server_addr).to_std();
+        eprintln!("[INFO]{} -> {}: connection incoming", client_addr, server_addr);
+        if inbound.local_addr().unwrap() == server_addr {
+            eprintln!("[WARM]{} -> {}: connection from local network", client_addr, server_addr);
+            continue;
+        }
+        let transfer = transfer(inbound, server_addr).map(move |r| {
+            if let Err(e) = r {
+                println!("[INFO]{} -> {}: connection closed with error; {}", client_addr, server_addr, e);
             }
-            let server = TcpStream::connect(&server_addr, &handle);
-            client.set_nodelay(true).unwrap_or_default();
-            let amounts = server.and_then(move |server| {
-                server.set_nodelay(true).unwrap_or_default();
-                let client_reader = TransparentTcpStream(Arc::new(client));
-                let client_writer = client_reader.clone();
-                let server_reader = TransparentTcpStream(Arc::new(server));
-                let server_writer = server_reader.clone();
-                let client_to_server =
-                    copy(client_reader, server_writer)
-                        .and_then(|(n, _, server_writer)| shutdown(server_writer).map(move |_| n));
-
-                let server_to_client =
-                    copy(server_reader, client_writer)
-                        .and_then(|(n, _, client_writer)| shutdown(client_writer).map(move |_| n));
-
-                client_to_server.join(server_to_client)
-            });
-
-            let msg = amounts
-                .map(move |(from_client, from_server)| {
-                    println!("[INFO]from {} to {} closed, wrote {} bytes and received {} bytes",
-                             client_addr,
-                             server_addr,
-                             from_client,
-                             from_server);
-                })
-                .map_err(|e| {
-                             // Don't panic. Maybe the client just disconnected too soon.
-                             println!("[WARM]error: {}", e);
-                         });
-            handle.spawn(msg);
-
-            Ok(())
         });
-    l.run(done).unwrap();
+        tokio::spawn(transfer);
+    }
+
+    Ok(())
 }
 
-#[derive(Clone)]
-struct TransparentTcpStream(Arc<TcpStream>);
+async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+    let mut outbound = TcpStream::connect(proxy_addr).await?;
 
-impl Read for TransparentTcpStream {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        (&*self.0).read(buf)
-    }
-}
+    inbound.set_nodelay(true)?;
+    outbound.set_nodelay(true)?;
 
-impl Write for TransparentTcpStream {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self.0).write(buf)
-    }
+    let client_addr = inbound.peer_addr().unwrap();
+    let server_addr = outbound.peer_addr().unwrap();
 
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
 
-impl AsyncRead for TransparentTcpStream {}
+    let client_to_server = async {
+        io::copy(&mut ri, &mut wo).await?;
+        wo.shutdown().await
+    };
 
-impl AsyncWrite for TransparentTcpStream {
-    fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try!(self.0.shutdown(Shutdown::Write));
-        Ok(().into())
-    }
+    let server_to_client = async {
+        io::copy(&mut ro, &mut wi).await?;
+        wi.shutdown().await
+    };
+
+    tokio::try_join!(client_to_server, server_to_client)?;
+    eprintln!("[INFO]{} -> {}: connection closed", client_addr, server_addr);
+
+    Ok(())
 }
