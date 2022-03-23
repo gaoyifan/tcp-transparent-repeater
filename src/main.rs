@@ -1,7 +1,6 @@
 #![warn(rust_2018_idioms)]
 
-use tokio::io;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use futures::FutureExt;
@@ -11,6 +10,10 @@ use std::error::Error;
 use nix::sys::socket::{sockopt,getsockopt,InetAddr};
 use std::os::unix::io::AsRawFd;
 use std::net::SocketAddr;
+
+use bytes::BytesMut;
+
+const BUF_SIZE: usize = 1024 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -54,12 +57,24 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
     let (mut ro, mut wo) = outbound.split();
 
     let client_to_server = async {
-        io::copy(&mut ri, &mut wo).await?;
+        let mut buf = BytesMut::with_capacity(BUF_SIZE);
+        loop {
+            let n = ri.read_buf(&mut buf).await?;
+            if n == 0 { break }
+            let n = wo.write_buf(&mut buf).await?;
+            if n == 0 { break }
+        }
         wo.shutdown().await
     };
 
     let server_to_client = async {
-        io::copy(&mut ro, &mut wi).await?;
+        let mut buf = BytesMut::with_capacity(BUF_SIZE);
+        loop {
+            let n = ro.read_buf(&mut buf).await?;
+            if n == 0 { break }
+            let n = wi.write_buf(&mut buf).await?;
+            if n == 0 { break }
+        }
         wi.shutdown().await
     };
 
