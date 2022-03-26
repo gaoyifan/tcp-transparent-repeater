@@ -53,33 +53,28 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
     let client_addr = inbound.peer_addr().unwrap();
     let server_addr = outbound.peer_addr().unwrap();
 
-    let (mut ri, mut wi) = inbound.split();
-    let (mut ro, mut wo) = outbound.split();
+    let (ri, wi) = inbound.split();
+    let (ro, wo) = outbound.split();
 
-    let client_to_server = async {
-        let mut buf = BytesMut::with_capacity(BUF_SIZE);
-        loop {
-            let n = ri.read_buf(&mut buf).await?;
-            if n == 0 { break }
-            let n = wo.write_buf(&mut buf).await?;
-            if n == 0 { break }
-        }
-        wo.shutdown().await
-    };
-
-    let server_to_client = async {
-        let mut buf = BytesMut::with_capacity(BUF_SIZE);
-        loop {
-            let n = ro.read_buf(&mut buf).await?;
-            if n == 0 { break }
-            let n = wi.write_buf(&mut buf).await?;
-            if n == 0 { break }
-        }
-        wi.shutdown().await
-    };
-
-    tokio::try_join!(client_to_server, server_to_client)?;
+    tokio::try_join!(
+        copy_one_direction(ro, wi),
+        copy_one_direction(ri, wo)
+    )?;
     eprintln!("[INFO]{} -> {}: connection closed", client_addr, server_addr);
 
     Ok(())
 }
+
+async fn copy_one_direction<T, U>(mut from: T, mut to: U) -> std::io::Result<()>
+    where T: AsyncReadExt + Unpin, U: AsyncWriteExt + Unpin
+{
+    let mut buf = BytesMut::with_capacity(BUF_SIZE);
+    loop {
+        let n = from.read_buf(&mut buf).await?;
+        if n == 0 { break }
+        let n = to.write_buf(&mut buf).await?;
+        if n == 0 { break }
+    }
+    to.shutdown().await
+}
+
