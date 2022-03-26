@@ -1,6 +1,6 @@
 [package]
 name = "tcp_transparent_repeater"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Yifan Gao <git@yfgao.com>"]
 edition = "2018"
 
