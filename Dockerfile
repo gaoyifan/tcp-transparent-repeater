@@ -1,4 +1,4 @@
-FROM ekidd/rust-musl-builder:1.49.0 as builder
+FROM ekidd/rust-musl-builder:1.57.0 as builder
 ADD Cargo.toml Cargo.lock /home/rust/src/
 ADD src/ /home/rust/src/src/
 RUN cargo check
