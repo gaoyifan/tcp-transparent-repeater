@@ -1,17 +1,18 @@
 #![warn(rust_2018_idioms)]
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
 use futures::FutureExt;
-use std::env;
 use std::error::Error;
+use std::{env, io};
 
 use nix::sys::socket::{getsockopt, sockopt, InetAddr};
 use std::net::SocketAddr;
 use std::os::unix::io::AsRawFd;
 
 use bytes::BytesMut;
+use tokio::net::tcp::{ReadHalf, WriteHalf};
 
 const BUF_SIZE: usize = 1024 * 1024;
 
@@ -62,10 +63,13 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
     let client_addr = inbound.peer_addr().unwrap();
     let server_addr = outbound.peer_addr().unwrap();
 
-    let (ri, wi) = inbound.split();
-    let (ro, wo) = outbound.split();
+    let (mut ri, mut wi) = inbound.split();
+    let (mut ro, mut wo) = outbound.split();
 
-    tokio::try_join!(copy_one_direction(ro, wi), copy_one_direction(ri, wo))?;
+    tokio::try_join!(
+        copy_one_direction(&mut ro, &mut wi),
+        copy_one_direction(&mut ri, &mut wo)
+    )?;
     eprintln!(
         "[INFO]{} -> {}: connection closed",
         client_addr, server_addr
@@ -74,20 +78,28 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
     Ok(())
 }
 
-async fn copy_one_direction<T, U>(mut from: T, mut to: U) -> std::io::Result<()>
-where
-    T: AsyncReadExt + Unpin,
-    U: AsyncWriteExt + Unpin,
-{
-    let mut buf = BytesMut::with_capacity(BUF_SIZE);
+async fn copy_one_direction(
+    from: &mut ReadHalf<'_>,
+    to: &mut WriteHalf<'_>,
+) -> std::io::Result<()> {
     loop {
-        let n = from.read_buf(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        let n = to.write_buf(&mut buf).await?;
-        if n == 0 {
-            break;
+        from.readable().await?;
+        {
+            let mut buf = BytesMut::with_capacity(BUF_SIZE);
+            match from.try_read_buf(&mut buf) {
+                Ok(0) => {
+                    break;
+                }
+                Ok(_n) => {
+                    to.write_all_buf(&mut buf).await?;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    continue;
+                }
+                Err(e) => {
+                    return Err(e.into());
+                }
+            }
         }
     }
     to.shutdown().await
