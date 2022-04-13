@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         if inbound.local_addr().unwrap() == server_addr {
             eprintln!(
-                "[WARM]{} -> {}: connection from local network",
+                "[WARN]{} -> {}: connection from local network",
                 client_addr, server_addr
             );
             continue;
