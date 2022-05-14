@@ -13,6 +13,7 @@ use std::os::unix::io::AsRawFd;
 
 use bytes::BytesMut;
 use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::time;
 
 const BUF_SIZE: usize = 1024 * 1024;
 
@@ -21,6 +22,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listen_addr = env::args()
         .nth(1)
         .unwrap_or_else(|| "127.0.0.1:1080".to_string());
+
+    let timeout = env::args()
+        .nth(2)
+        .unwrap_or_else(|| "3600".to_string()).parse::<u64>().unwrap();
+
+    let timeout = time::Duration::from_secs(timeout);
 
     println!("Listening on: {}", listen_addr);
 
@@ -40,7 +47,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             );
             continue;
         }
-        let transfer = transfer(inbound, server_addr).map(move |r| {
+        let transfer = transfer(inbound, server_addr, timeout).map(move |r| {
             if let Err(e) = r {
                 println!(
                     "[INFO]{} -> {}: connection closed with error; {}",
@@ -54,7 +61,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr, timeout: time::Duration) -> Result<(), Box<dyn Error>> {
     let mut outbound = TcpStream::connect(proxy_addr).await?;
 
     inbound.set_nodelay(true)?;
@@ -67,8 +74,8 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
     let (mut ro, mut wo) = outbound.split();
 
     tokio::try_join!(
-        copy_one_direction(&mut ro, &mut wi),
-        copy_one_direction(&mut ri, &mut wo)
+        copy_one_direction(&mut ro, &mut wi, timeout),
+        copy_one_direction(&mut ri, &mut wo, timeout)
     )?;
     eprintln!(
         "[INFO]{} -> {}: connection closed",
@@ -81,9 +88,12 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr) -> Result<(), 
 async fn copy_one_direction(
     from: &mut ReadHalf<'_>,
     to: &mut WriteHalf<'_>,
+    timeout: time::Duration,
 ) -> std::io::Result<()> {
     loop {
-        from.readable().await?;
+        if let Err(_) = time::timeout(timeout,from.readable()).await {
+            break
+        }
         {
             let mut buf = BytesMut::with_capacity(BUF_SIZE);
             match from.try_read_buf(&mut buf) {
