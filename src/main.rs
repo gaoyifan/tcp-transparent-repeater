@@ -91,7 +91,7 @@ async fn copy_one_direction(
     timeout: time::Duration,
 ) -> std::io::Result<()> {
     loop {
-        if let Err(_) = time::timeout(timeout,from.readable()).await {
+        if (time::timeout(timeout,from.readable()).await).is_err() {
             break
         }
         {
@@ -107,7 +107,7 @@ async fn copy_one_direction(
                     continue;
                 }
                 Err(e) => {
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }
