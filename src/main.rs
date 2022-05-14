@@ -13,7 +13,9 @@ use std::os::unix::io::AsRawFd;
 
 use bytes::BytesMut;
 use tokio::net::tcp::{ReadHalf, WriteHalf};
-use tokio::time;
+use tokio::sync::{broadcast, mpsc};
+
+use tokio::{select, time};
 
 const BUF_SIZE: usize = 1024 * 1024;
 
@@ -25,7 +27,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let timeout = env::args()
         .nth(2)
-        .unwrap_or_else(|| "3600".to_string()).parse::<u64>().unwrap();
+        .unwrap_or_else(|| "3600".to_string())
+        .parse::<u64>()
+        .unwrap();
 
     let timeout = time::Duration::from_secs(timeout);
 
@@ -61,7 +65,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr, timeout: time::Duration) -> Result<(), Box<dyn Error>> {
+async fn transfer(
+    mut inbound: TcpStream,
+    proxy_addr: SocketAddr,
+    timeout: time::Duration,
+) -> Result<(), Box<dyn Error>> {
     let mut outbound = TcpStream::connect(proxy_addr).await?;
 
     inbound.set_nodelay(true)?;
@@ -73,10 +81,14 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr, timeout: time:
     let (mut ri, mut wi) = inbound.split();
     let (mut ro, mut wo) = outbound.split();
 
-    tokio::try_join!(
-        copy_one_direction(&mut ro, &mut wi, timeout),
-        copy_one_direction(&mut ri, &mut wo, timeout)
-    )?;
+    let (stat_tx, stat_rx) = mpsc::channel(32);
+    let (timeout_tx, timeout_rx) = broadcast::channel(1);
+
+    tokio::join!(
+        copy_one_direction(&mut ro, &mut wi, timeout_rx, stat_tx.clone()),
+        copy_one_direction(&mut ri, &mut wo, timeout_tx.subscribe(), stat_tx.clone()),
+        stat_and_timeout(stat_rx, timeout_tx, timeout)
+    );
     eprintln!(
         "[INFO]{} -> {}: connection closed",
         client_addr, server_addr
@@ -85,30 +97,53 @@ async fn transfer(mut inbound: TcpStream, proxy_addr: SocketAddr, timeout: time:
     Ok(())
 }
 
+async fn stat_and_timeout(
+    mut stat_rx: mpsc::Receiver<usize>,
+    timeout_tx: broadcast::Sender<()>,
+    timeout: time::Duration,
+) -> Result<usize, broadcast::error::SendError<()>> {
+    let mut traffic_total: usize = 0;
+    loop {
+        match time::timeout(timeout, stat_rx.recv()).await {
+            Ok(Some(traffic)) => {
+                traffic_total += traffic;
+            }
+            Ok(None) => continue,
+            Err(_) => break,
+        }
+    }
+    eprintln!("total traffic on both sides: {}", traffic_total);
+    timeout_tx.send(())
+}
+
 async fn copy_one_direction(
     from: &mut ReadHalf<'_>,
     to: &mut WriteHalf<'_>,
-    timeout: time::Duration,
+    mut timeout_rx: broadcast::Receiver<()>,
+    stat_tx: mpsc::Sender<usize>,
 ) -> std::io::Result<()> {
     loop {
-        if (time::timeout(timeout,from.readable()).await).is_err() {
-            break
-        }
-        {
-            let mut buf = BytesMut::with_capacity(BUF_SIZE);
-            match from.try_read_buf(&mut buf) {
-                Ok(0) => {
-                    break;
+        select! {
+            _ = from.readable() => {
+                let mut buf = BytesMut::with_capacity(BUF_SIZE);
+                match from.try_read_buf(&mut buf) {
+                    Ok(0) => {
+                        break;
+                    }
+                    Ok(n) => {
+                        stat_tx.send(n).await.ok();
+                        to.write_all_buf(&mut buf).await?;
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
                 }
-                Ok(_n) => {
-                    to.write_all_buf(&mut buf).await?;
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e);
-                }
+            }
+            _ = timeout_rx.recv() => {
+                break
             }
         }
     }
