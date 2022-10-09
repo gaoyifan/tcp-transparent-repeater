@@ -39,8 +39,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
 
     while let Ok((inbound, client_addr)) = listener.accept().await {
-        let server_addr = getsockopt(inbound.as_raw_fd(), sockopt::OriginalDst).unwrap();
-        let server_addr = InetAddr::V4(server_addr).to_std();
+        //        let server_addr = getsockopt(inbound.as_raw_fd(), sockopt::OriginalDst).unwrap();
+        //        let server_addr = InetAddr::V4(server_addr).to_std();
+        let server_addr = "127.0.0.1:1081".parse::<SocketAddr>().unwrap();
         eprintln!(
             "[INFO]{} -> {}: connection incoming",
             client_addr, server_addr
