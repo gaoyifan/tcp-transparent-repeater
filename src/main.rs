@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::{select, time};
 
 const BUF_SIZE: usize = 1024 * 1024;
+const CHANNEL_SIZE: usize = 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -82,11 +83,19 @@ async fn transfer(
     let (mut ro, mut wo) = outbound.split();
 
     let (stat_tx, stat_rx) = mpsc::channel(32);
-    let (timeout_tx, timeout_rx) = broadcast::channel(1);
+    let (timeout_tx, timeout_rx1) = broadcast::channel(1);
+    let timeout_rx2 = timeout_tx.subscribe();
+    let timeout_rx3 = timeout_tx.subscribe();
+    let timeout_rx4 = timeout_tx.subscribe();
+
+    let (tx1,rx1) = mpsc::channel::<BytesMut>(CHANNEL_SIZE);
+    let (tx2,rx2) = mpsc::channel::<BytesMut>(CHANNEL_SIZE);
 
     tokio::join!(
-        copy_one_direction(&mut ro, &mut wi, timeout_rx, stat_tx.clone()),
-        copy_one_direction(&mut ri, &mut wo, timeout_tx.subscribe(), stat_tx.clone()),
+        rx_to_channel(&mut ro, tx1.clone(), timeout_rx1, stat_tx.clone()),
+        channel_to_tx(&mut wi, rx1, timeout_rx2),
+        rx_to_channel(&mut ri, tx2.clone(), timeout_rx3, stat_tx.clone()),
+        channel_to_tx(&mut wo, rx2, timeout_rx4),
         stat_and_timeout(stat_rx, timeout_tx, timeout)
     );
     eprintln!(
@@ -116,23 +125,23 @@ async fn stat_and_timeout(
     timeout_tx.send(())
 }
 
-async fn copy_one_direction(
-    from: &mut ReadHalf<'_>,
-    to: &mut WriteHalf<'_>,
-    mut timeout_rx: broadcast::Receiver<()>,
-    stat_tx: mpsc::Sender<usize>,
-) -> std::io::Result<()> {
+async fn rx_to_channel(mut r: &mut ReadHalf<'_>,
+                      ch: mpsc::Sender<BytesMut>,
+                      mut timeout_rx: broadcast::Receiver<()>,
+                      stat_tx: mpsc::Sender<usize>)
+    -> std::io::Result<()>
+{
     loop {
         select! {
-            _ = from.readable() => {
+            _ = r.readable() => {
                 let mut buf = BytesMut::with_capacity(BUF_SIZE);
-                match from.try_read_buf(&mut buf) {
+                match r.try_read_buf(&mut buf) {
                     Ok(0) => {
                         break;
                     }
                     Ok(n) => {
                         stat_tx.send(n).await.ok();
-                        to.write_all_buf(&mut buf).await?;
+                        ch.send(buf).await.ok();
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         continue;
@@ -147,5 +156,31 @@ async fn copy_one_direction(
             }
         }
     }
-    to.shutdown().await
+    Ok(())
+}
+
+async fn channel_to_tx(
+    mut w: &mut WriteHalf<'_>,
+    mut ch: mpsc::Receiver<BytesMut>,
+    mut timeout_rx: broadcast::Receiver<()>)
+    -> std::io::Result<()>
+{
+    loop {
+        select! {
+            result = ch.recv() => {
+                match result {
+                    Some(buf) => {
+                        w.write_all(&buf).await?;
+                    }
+                    None => {
+                        break;
+                    }
+                }
+            }
+            _ = timeout_rx.recv() => {
+                break
+            }
+        }
+    }
+    Ok(())
 }
