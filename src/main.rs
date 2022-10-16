@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while let Ok((inbound, client_addr)) = listener.accept().await {
         #[cfg(any(target_os = "android", target_os = "linux"))]
         let server_addr = InetAddr::V4(getsockopt(inbound.as_raw_fd(), sockopt::OriginalDst).unwrap()).to_std();
-        #[cfg(not(all(target_os = "android", target_os = "linux")))]
+        #[cfg(not(any(target_os = "android", target_os = "linux")))]
         let server_addr = "127.0.0.1:1081".parse::<SocketAddr>().unwrap();
         eprintln!(
             "[INFO]{} -> {}: connection incoming",
@@ -93,7 +93,7 @@ async fn transfer(
     let (tx1,rx1) = mpsc::channel::<BytesMut>(CHANNEL_SIZE);
     let (tx2,rx2) = mpsc::channel::<BytesMut>(CHANNEL_SIZE);
 
-    tokio::join!(
+    let _ = tokio::join!(
         rx_to_channel(&mut ro, tx1.clone(), timeout_rx1, stat_tx.clone()),
         channel_to_tx(&mut wi, rx1, timeout_rx2),
         rx_to_channel(&mut ri, tx2.clone(), timeout_rx3, stat_tx.clone()),
@@ -127,7 +127,7 @@ async fn stat_and_timeout(
     timeout_tx.send(())
 }
 
-async fn rx_to_channel(mut r: &mut ReadHalf<'_>,
+async fn rx_to_channel(r: &mut ReadHalf<'_>,
                       ch: mpsc::Sender<BytesMut>,
                       mut timeout_rx: broadcast::Receiver<()>,
                       stat_tx: mpsc::Sender<usize>)
@@ -162,7 +162,7 @@ async fn rx_to_channel(mut r: &mut ReadHalf<'_>,
 }
 
 async fn channel_to_tx(
-    mut w: &mut WriteHalf<'_>,
+    w: &mut WriteHalf<'_>,
     mut ch: mpsc::Receiver<BytesMut>,
     mut timeout_rx: broadcast::Receiver<()>)
     -> std::io::Result<()>
