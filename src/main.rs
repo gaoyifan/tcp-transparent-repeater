@@ -140,8 +140,8 @@ async fn rx_to_channel(mut r: &mut ReadHalf<'_>,
                         break;
                     }
                     Ok(n) => {
-                        stat_tx.send(n).await.ok();
-                        ch.send(buf).await.ok();
+                        stat_tx.send(n).await.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "stat_tx closed"))?;
+                        ch.send(buf).await.map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ch closed"))?;
                     }
                     Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
                         continue;
