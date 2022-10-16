@@ -18,7 +18,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::{select, time};
 
 const BUF_SIZE: usize = 1024 * 1024;
-const CHANNEL_SIZE: usize = 1024;
+const CHANNEL_SIZE: usize = 32;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
