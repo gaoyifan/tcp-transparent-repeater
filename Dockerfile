@@ -1,10 +1,11 @@
-FROM ekidd/rust-musl-builder:1.57.0 as builder
-ADD Cargo.toml Cargo.lock /home/rust/src/
-ADD src/ /home/rust/src/src/
-RUN cargo check
+FROM rust:alpine as builder
+RUN apk update
+RUN apk add --no-cache musl-dev
+
+WORKDIR /home/rust/ttr/
+ADD ./ ./
 RUN cargo build --release
-RUN strip target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater
 
 FROM alpine
-COPY --from=builder /home/rust/src/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/
-ENTRYPOINT ["/usr/local/bin/tcp_transparent_repeater"]
+COPY --from=builder /home/rust/ttr/target/x86_64-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/ttr
+ENTRYPOINT ["/usr/local/bin/ttr"]
