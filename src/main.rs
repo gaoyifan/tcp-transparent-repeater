@@ -119,7 +119,7 @@ async fn stat_and_timeout(
             Ok(Some(traffic)) => {
                 traffic_total += traffic;
             }
-            Ok(None) => continue,
+            Ok(None) => break,
             Err(_) => break,
         }
     }
