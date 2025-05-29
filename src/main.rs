@@ -5,9 +5,11 @@ use std::error::Error;
 use std::sync::Arc;
 
 use futures::FutureExt;
+use nix::sys::socket::{getsockopt, setsockopt, sockopt::Mark, sockopt::OriginalDst};
 use socket2::{SockRef, TcpKeepalive};
+use std::net::{Ipv4Addr, SocketAddr};
 use tokio::io::copy_bidirectional;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::Duration;
 
 #[tokio::main]
@@ -61,18 +63,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn get_original_dst(stream: &TcpStream) -> std::net::SocketAddr {
-    use nix::sys::socket::{getsockopt, sockopt::OriginalDst, InetAddr};
-    use std::os::unix::io::AsRawFd;
+    let sockaddr_in = getsockopt(stream, OriginalDst).unwrap();
 
-    let server_addr = getsockopt(stream.as_raw_fd(), OriginalDst).unwrap();
-    InetAddr::V4(server_addr).to_std()
+    // Convert libc::sockaddr_in to std::net::SocketAddr
+    let ip = Ipv4Addr::from(u32::from_be(sockaddr_in.sin_addr.s_addr));
+    let port = u16::from_be(sockaddr_in.sin_port);
+    SocketAddr::from((ip, port))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn get_original_dst(_stream: &TcpStream) -> std::net::SocketAddr {
-    unimplemented!();
+fn get_fwmark(stream: &TcpStream) -> Option<u32> {
+    getsockopt(stream, Mark).ok().filter(|&mark| mark != 0)
+}
+
+fn set_fwmark(socket: &TcpSocket, mark: u32) {
+    if let Err(e) = setsockopt(socket, Mark, &mark) {
+        eprintln!("[WARN] Failed to set fwmark {}: {}", mark, e);
+    }
 }
 
 async fn handle_connection(
@@ -80,7 +87,23 @@ async fn handle_connection(
     proxy_addr: std::net::SocketAddr,
     keepalive: Arc<TcpKeepalive>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut outbound = TcpStream::connect(proxy_addr).await?;
+    // Get the fwmark from the incoming connection
+    let fwmark = get_fwmark(&inbound);
+
+    // Create a TcpSocket to set options before connecting
+    let socket = if proxy_addr.is_ipv4() {
+        TcpSocket::new_v4()?
+    } else {
+        TcpSocket::new_v6()?
+    };
+
+    // Set the same fwmark on the outbound socket if we got one
+    if let Some(mark) = fwmark {
+        set_fwmark(&socket, mark);
+    }
+
+    // Connect using the configured socket
+    let mut outbound = socket.connect(proxy_addr).await?;
 
     // Set keepalive option
     SockRef::from(&inbound).set_tcp_keepalive(&keepalive)?;
