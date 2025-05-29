@@ -1,5 +1,5 @@
 ARG ARCH=x86_64
-FROM messense/rust-musl-cross:${ARCH}-musl as builder
+FROM messense/rust-musl-cross:${ARCH}-musl AS builder
 ADD Cargo.toml Cargo.lock /home/rust/src/
 ADD src/ /home/rust/src/src/
 RUN cargo check
