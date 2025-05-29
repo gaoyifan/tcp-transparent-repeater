@@ -8,9 +8,11 @@ use futures::FutureExt;
 use nix::sys::socket::{getsockopt, setsockopt, sockopt::Mark, sockopt::OriginalDst};
 use socket2::{SockRef, TcpKeepalive};
 use std::net::{Ipv4Addr, SocketAddr};
-use tokio::io::copy_bidirectional;
+use tokio::io::copy_bidirectional_with_sizes;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::time::Duration;
+
+const BUF_SIZE: usize = 256 * 1024; // 256KB
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -115,7 +117,7 @@ async fn handle_connection(
     let client_addr = inbound.peer_addr()?;
     let server_addr = outbound.peer_addr()?;
 
-    let result = copy_bidirectional(&mut inbound, &mut outbound).await?;
+    let result = copy_bidirectional_with_sizes(&mut inbound, &mut outbound, BUF_SIZE, BUF_SIZE).await?;
 
     eprintln!(
         "[INFO] {} -> {}: connection closed with {} bytes transferred",
