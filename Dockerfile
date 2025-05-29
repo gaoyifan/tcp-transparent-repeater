@@ -1,11 +1,12 @@
-ARG ARCH=x86_64
-FROM messense/rust-musl-cross:${ARCH}-musl AS builder
-ADD Cargo.toml Cargo.lock /home/rust/src/
-ADD src/ /home/rust/src/src/
-RUN cargo check
-RUN cargo build --release
+FROM rust:alpine AS builder
+RUN apk update
+RUN apk add --no-cache musl-dev
+
+WORKDIR /home/rust/ttr/
+ADD Cargo.toml Cargo.lock ./
+ADD src/ ./src/
+RUN cargo build --release --target=$(uname -m)-unknown-linux-musl
 
 FROM alpine
-ARG ARCH=x86_64
-COPY --from=builder /home/rust/src/target/${ARCH}-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/
-ENTRYPOINT ["/usr/local/bin/tcp_transparent_repeater"]
+COPY --from=builder /home/rust/ttr/target/*-unknown-linux-musl/release/tcp_transparent_repeater /usr/local/bin/ttr
+ENTRYPOINT ["/usr/local/bin/ttr"]
